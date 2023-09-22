@@ -2,6 +2,9 @@
 
 namespace NW\WebService\References\Operations\Notification;
 
+/*
+ * Назначение класса - рассылка уведомлений клиентам и сотрудникам при наступлении определенных событий
+ */
 class TsReturnOperation extends ReferencesOperation
 {
     public const TYPE_NEW    = 1;
@@ -10,11 +13,23 @@ class TsReturnOperation extends ReferencesOperation
     /**
      * @throws \Exception
      */
-    public function doOperation(): void
+    public function doOperation(): array
     {
         $data = (array)$this->getRequest('data');
-        $resellerId = $data['resellerId'];
+        $resellerId = (int)$data['resellerId'];
+        $clientId = (int)$data['clientId'];
         $notificationType = (int)$data['notificationType'];
+        $creatorId = (int)$data['creatorId'];
+        $expertId = (int)$data['expertId'];
+
+        //при необходимости для нижеследующих полей можно добавить проверку на пустоту, например
+        $complaintId = (int)$data['complaintId'];
+        $complaintNumber = (string)$data['complaintNumber'];
+        $consumptionId = (int)$data['consumptionId'];
+        $consumptionNumber = (string)$data['consumptionNumber'];
+        $agreementNumber = (string)$data['agreementNumber'];
+        $date = (string)$data['date'];
+
         $result = [
             'notificationEmployeeByEmail' => false,
             'notificationClientByEmail'   => false,
@@ -24,36 +39,35 @@ class TsReturnOperation extends ReferencesOperation
             ],
         ];
 
-        if (empty((int)$resellerId)) {
-            $result['notificationClientBySms']['message'] = 'Empty resellerId';
-            return $result;
+        if (empty($resellerId)) {
+            throw new \Exception('Empty resellerId', 400);
         }
 
-        if (empty((int)$notificationType)) {
+        if (empty($notificationType)) {
             throw new \Exception('Empty notificationType', 400);
         }
 
-        $reseller = Seller::getById((int)$resellerId);
+        $reseller = Seller::getById($resellerId);
         if ($reseller === null) {
             throw new \Exception('Seller not found!', 400);
         }
 
-        $client = Contractor::getById((int)$data['clientId']);
-        if ($client === null || $client->type !== Contractor::TYPE_CUSTOMER || $client->Seller->id !== $resellerId) {
-            throw new \Exception('сlient not found!', 400);
+        $client = Contractor::getById($clientId);
+        if ($client === null || $client->getType() !== Contractor::TYPE_CUSTOMER || $client->Seller->getId() !== $resellerId) {
+            throw new \Exception('Client not found!', 400);
         }
 
         $cFullName = $client->getFullName();
-        if (empty($client->getFullName())) {
-            $cFullName = $client->name;
+        if (empty($cFullName)) {
+            throw new \Exception('No client name!', 400);
         }
 
-        $cr = Employee::getById((int)$data['creatorId']);
+        $cr = Employee::getById($creatorId);
         if ($cr === null) {
             throw new \Exception('Creator not found!', 400);
         }
 
-        $et = Employee::getById((int)$data['expertId']);
+        $et = Employee::getById($expertId);
         if ($et === null) {
             throw new \Exception('Expert not found!', 400);
         }
@@ -69,18 +83,18 @@ class TsReturnOperation extends ReferencesOperation
         }
 
         $templateData = [
-            'COMPLAINT_ID'       => (int)$data['complaintId'],
-            'COMPLAINT_NUMBER'   => (string)$data['complaintNumber'],
-            'CREATOR_ID'         => (int)$data['creatorId'],
+            'COMPLAINT_ID'       => $complaintId,
+            'COMPLAINT_NUMBER'   => $complaintNumber,
+            'CREATOR_ID'         => $creatorId,
             'CREATOR_NAME'       => $cr->getFullName(),
-            'EXPERT_ID'          => (int)$data['expertId'],
+            'EXPERT_ID'          => $expertId,
             'EXPERT_NAME'        => $et->getFullName(),
-            'CLIENT_ID'          => (int)$data['clientId'],
+            'CLIENT_ID'          => $clientId,
             'CLIENT_NAME'        => $cFullName,
-            'CONSUMPTION_ID'     => (int)$data['consumptionId'],
-            'CONSUMPTION_NUMBER' => (string)$data['consumptionNumber'],
-            'AGREEMENT_NUMBER'   => (string)$data['agreementNumber'],
-            'DATE'               => (string)$data['date'],
+            'CONSUMPTION_ID'     => $consumptionId,
+            'CONSUMPTION_NUMBER' => $consumptionNumber,
+            'AGREEMENT_NUMBER'   => $agreementNumber,
+            'DATE'               => $date,
             'DIFFERENCES'        => $differences,
         ];
 
@@ -91,7 +105,7 @@ class TsReturnOperation extends ReferencesOperation
             }
         }
 
-        $emailFrom = getResellerEmailFrom($resellerId);
+        $emailFrom = getResellerEmailFrom();
         // Получаем email сотрудников из настроек
         $emails = getEmailsByPermit($resellerId, 'tsGoodsReturn');
         if (!empty($emailFrom) && count($emails) > 0) {
@@ -100,6 +114,10 @@ class TsReturnOperation extends ReferencesOperation
                     0 => [ // MessageTypes::EMAIL
                            'emailFrom' => $emailFrom,
                            'emailTo'   => $email,
+                           /* Имеются вопросы по получению темы и тела письма.
+                            * Ошибочно используется функция перевода __(). По всей вероятности в templateData должны были быть заданы ключи тема и тела письма с их содержимым
+                            * и передаваться в поля subject и message письма
+                            */
                            'subject'   => __('complaintEmployeeEmailSubject', $templateData, $resellerId),
                            'message'   => __('complaintEmployeeEmailBody', $templateData, $resellerId),
                     ],
@@ -111,24 +129,27 @@ class TsReturnOperation extends ReferencesOperation
 
         // Шлём клиентское уведомление, только если произошла смена статуса
         if ($notificationType === self::TYPE_CHANGE && !empty($data['differences']['to'])) {
-            if (!empty($emailFrom) && !empty($client->email)) {
+            if (!empty($emailFrom) && !empty($client->getEmail())) {
                 MessagesClient::sendMessage([
                     0 => [ // MessageTypes::EMAIL
                            'emailFrom' => $emailFrom,
-                           'emailTo'   => $client->email,
+                           'emailTo'   => $client->getEmail(),
+                            /* Имеются вопросы по получению темы и тела письма.
+                             * Ошибочно используется функция перевода __(). По всей вероятности в templateData должны были быть заданы ключи тема и тела письма с их содержимым
+                             * и передаваться в поля subject и message письма
+                             */
                            'subject'   => __('complaintClientEmailSubject', $templateData, $resellerId),
                            'message'   => __('complaintClientEmailBody', $templateData, $resellerId),
                     ],
-                ], $resellerId, $client->id, NotificationEvents::CHANGE_RETURN_STATUS, (int)$data['differences']['to']);
+                ], $resellerId, $client->getId(), NotificationEvents::CHANGE_RETURN_STATUS, (int)$data['differences']['to']);
                 $result['notificationClientByEmail'] = true;
             }
 
             if (!empty($client->mobile)) {
-                $res = NotificationManager::send($resellerId, $client->id, NotificationEvents::CHANGE_RETURN_STATUS, (int)$data['differences']['to'], $templateData, $error);
+                $res = NotificationManager::send($resellerId, $client->getId(), NotificationEvents::CHANGE_RETURN_STATUS, (int)$data['differences']['to'], $templateData, $error);
                 if ($res) {
                     $result['notificationClientBySms']['isSent'] = true;
-                }
-                if (!empty($error)) {
+                } else if(!empty($error)) {
                     $result['notificationClientBySms']['message'] = $error;
                 }
             }
